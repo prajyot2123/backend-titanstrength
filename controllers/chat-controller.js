@@ -17,6 +17,12 @@ const FOLLOW_UP_PATTERN =
 
 const isInDomain = (content = "") => ALLOWED_TOPIC_PATTERN.test(content);
 
+const PERSONAL_DATA_INTENT_PATTERN =
+  /\b(my|mine|me|i|past|history|records?|record|routine|progress|profile|stats|performance|did i do|what did i do|how many|last workout|previous workout|weekly summary|monthly summary)\b/i;
+
+const isPersonalHistoryIntent = (content = "") =>
+  PERSONAL_DATA_INTENT_PATTERN.test(content);
+
 const shouldAcceptUserMessage = (messages = []) => {
   const userMessages = messages.filter((message) => message.role === "user");
   const latest = userMessages[userMessages.length - 1];
@@ -29,15 +35,20 @@ const shouldAcceptUserMessage = (messages = []) => {
     return true;
   }
 
+  // Treat personal workout-history requests as in-domain fitness context.
+  if (isPersonalHistoryIntent(latest.content)) {
+    return true;
+  }
+
   // Allow short follow-ups when the prior user context is in-domain.
   const priorUserMessages = userMessages.slice(0, -1);
   const hasInDomainContext = priorUserMessages.some((message) => isInDomain(message.content));
+  const hasPersonalHistoryContext = priorUserMessages.some((message) =>
+    isPersonalHistoryIntent(message.content)
+  );
 
-  return hasInDomainContext && FOLLOW_UP_PATTERN.test(latest.content);
+  return (hasInDomainContext || hasPersonalHistoryContext) && FOLLOW_UP_PATTERN.test(latest.content);
 };
-
-const PERSONAL_DATA_INTENT_PATTERN =
-  /\b(my|mine|me|i|past|history|records?|record|routine|progress|profile|stats|performance|did i do|what did i do|how many|last workout|previous workout|weekly summary|monthly summary)\b/i;
 
 const asksForPersonalHistory = (messages = []) => {
   const latestUserMessage = [...messages]
@@ -48,7 +59,7 @@ const asksForPersonalHistory = (messages = []) => {
     return false;
   }
 
-  return PERSONAL_DATA_INTENT_PATTERN.test(latestUserMessage.content || "");
+  return isPersonalHistoryIntent(latestUserMessage.content || "");
 };
 
 const formatWorkoutLine = (workout) => {
