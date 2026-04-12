@@ -3,6 +3,54 @@ const { Cardio, Resistance } = require("../models");
 
 const groq = new Groq({ apiKey: process.env.API_KEY?.trim() });
 
+const OUT_OF_SCOPE_REPLY =
+  "I can only help with health, fitness, nutrition, recovery, sleep, and healthy lifestyle topics. Please ask something in that area.";
+
+const LOGIN_REQUIRED_PROFILE_REPLY =
+  "I cannot access your past records or personal routine unless you are logged in. Please log in and ask again so I can use your workout history.";
+
+const ALLOWED_TOPIC_PATTERN =
+  /\b(fitness|workout|exercise|training|gym|cardio|resistance|strength|muscle|reps?|sets?|weight|calorie|calories|nutrition|diet|meal|protein|hydration|water|sleep|recovery|stretch|mobility|posture|injury|wellness|healthy|health|lifestyle|habit|steps?|walking|running|jogging|cycling|yoga|pilates|hiit|fat loss|weight loss|bulk|cut)\b/i;
+
+const FOLLOW_UP_PATTERN =
+  /\b(it|that|this|those|these|more|another|again|why|how|when|what about|can i|should i)\b/i;
+
+const isInDomain = (content = "") => ALLOWED_TOPIC_PATTERN.test(content);
+
+const shouldAcceptUserMessage = (messages = []) => {
+  const userMessages = messages.filter((message) => message.role === "user");
+  const latest = userMessages[userMessages.length - 1];
+
+  if (!latest) {
+    return false;
+  }
+
+  if (isInDomain(latest.content)) {
+    return true;
+  }
+
+  // Allow short follow-ups when the prior user context is in-domain.
+  const priorUserMessages = userMessages.slice(0, -1);
+  const hasInDomainContext = priorUserMessages.some((message) => isInDomain(message.content));
+
+  return hasInDomainContext && FOLLOW_UP_PATTERN.test(latest.content);
+};
+
+const PERSONAL_DATA_INTENT_PATTERN =
+  /\b(my|mine|me|i|past|history|records?|record|routine|progress|profile|stats|performance|did i do|what did i do|how many|last workout|previous workout|weekly summary|monthly summary)\b/i;
+
+const asksForPersonalHistory = (messages = []) => {
+  const latestUserMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "user");
+
+  if (!latestUserMessage) {
+    return false;
+  }
+
+  return PERSONAL_DATA_INTENT_PATTERN.test(latestUserMessage.content || "");
+};
+
 const formatWorkoutLine = (workout) => {
   if (workout.type === "cardio") {
     const distance = Number.isFinite(workout.distance)
@@ -121,6 +169,11 @@ module.exports = {
       if (trimmedMessages.length === 0) {
         return res.status(400).json({ message: "No valid messages provided." });
       }
+
+      if (!shouldAcceptUserMessage(trimmedMessages)) {
+        return res.json({ message: OUT_OF_SCOPE_REPLY });
+      }
+
       const timeScope = getTimeScope(trimmedMessages);
       const rangeMap = {
         today: getTodayRange(),
@@ -129,6 +182,11 @@ module.exports = {
         month: getThisMonthRange(),
       };
       const isAuthed = Boolean(req.user?._id);
+
+      if (!isAuthed && asksForPersonalHistory(trimmedMessages)) {
+        return res.json({ message: LOGIN_REQUIRED_PROFILE_REPLY });
+      }
+
       const workouts = isAuthed
         ? await getRecentWorkoutLines({
             userId: req.user?._id,
@@ -147,7 +205,16 @@ module.exports = {
           ? "today"
           : "recent";
 
-      const systemPrompt = `You are a fitness assistant in a workout tracking app.\n\n${timeScopeText} workouts ${scopeText}:\n${workouts}\n\nGive short, helpful, practical fitness advice.`;
+      const systemPrompt = `You are a fitness assistant in a workout tracking app.
+
+    You can ONLY answer topics related to health, fitness, exercise, nutrition, recovery, sleep, and healthy lifestyle habits.
+    If a user asks about anything outside those topics, reply exactly with:
+    "${OUT_OF_SCOPE_REPLY}"
+
+    ${timeScopeText} workouts ${scopeText}:
+    ${workouts}
+
+    Keep responses short, practical, and supportive.`;
 
       const response = await groq.chat.completions.create({
         model: "llama-3.1-8b-instant",
